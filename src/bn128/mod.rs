@@ -1,9 +1,15 @@
+// TODO: add test vectors from https://github.com/ethereum/go-ethereum/blob/7b189d6f1f7eedf46c6607901af291855b81112b/core/vm/contracts_test.go
+// TODO: hash_to_curve https://tools.ietf.org/html/draft-irtf-cfrg-hash-to-curve-04#page-37
+// TODO: BLS draft https://github.com/cfrg/draft-irtf-cfrg-bls-signature/blob/master/draft-irtf-cfrg-bls-signature-00.txt
+//
+// Some sources to fast hash to curve algorithms:
+// https://gist.github.com/hermanjunge/3308fbd3627033fc8d8ca0dd50809844
+
 use crate::BLS;
 
 use bn::{arith, AffineG1, AffineG2, Fq, Fq2, Fr,  G1, G2, Group, Gt, pairing_batch};
 use byteorder::{BigEndian, ByteOrder};
 use digest::Digest;
-use failure::_core::ptr::hash;
 use sha2;
 
 /// Module containing error definitions
@@ -44,12 +50,13 @@ impl Bn128 {
     /// # Returns
     ///
     /// * If successful, a point in the `G1` group representing the hashed point.
-    fn hash_to_try_and_increment(&self, public_key: &[u8], msg: &[u8]) -> Result<G1, Error> {
+    fn hash_to_try_and_increment(&self, _public_key: &[u8], msg: &[u8]) -> Result<G1, Error> {
         let mut c = 0..255;
 
         // Add prefixes and counter suffix
         let cipher = [0xFF, 0x01];
-        let mut v = [&cipher[..], &public_key[..], &msg[..], &[0x00]].concat();
+        // let mut v = [&cipher[..], &public_key[..], &msg[..], &[0x00]].concat();
+        let mut v = [&cipher[..], &msg[..], &[0x00]].concat();
         let position = v.len() - 1;
 
         // `Hash(cipher||PK||data)`
@@ -379,7 +386,7 @@ mod test {
         let hash_bytes = curve.to_compressed_g1(hash_point).unwrap();
 
         let expected_hash =
-            hex::decode("022aea970a30a6e7ac62400cf2bab15ab3b31305c6af6c8b5763573286072295f6")
+            hex::decode("021c4beaa17d30dd78c1a822cc75722490aa2292e145a408eea0b66a23486b8dd9")
                 .unwrap();
         assert_eq!(hash_bytes, expected_hash);
     }
@@ -399,8 +406,9 @@ mod test {
         let signature = bn128.sign(&secret_key, &data).unwrap();
 
         let expected_signature =
-            hex::decode("0224942ea9eb2845931cdd69d437a9e9bfc64b603497f72ab34f2accc30bb26bd1")
+            hex::decode("02209a2c52479455ebc10f084db453215fc47b0067a76df11677c0ff82c0cb782a")
                 .unwrap();
+
         assert_eq!(signature, expected_signature);
     }
 
@@ -417,7 +425,7 @@ mod test {
 
         // Signature
         let signature =
-            hex::decode("0224942ea9eb2845931cdd69d437a9e9bfc64b603497f72ab34f2accc30bb26bd1")
+            hex::decode("02209a2c52479455ebc10f084db453215fc47b0067a76df11677c0ff82c0cb782a")
                 .unwrap();
 
         // Message signed
@@ -456,11 +464,80 @@ mod test {
         let signatures = [&sign_1[..], &sign_2[..]];
 
         // Aggregation
-        let agg_signatures =bn128.aggregate_signatures(&signatures).expect("Signature aggregation should not fail if G1 points are valid.");
+        let agg_signature =bn128.aggregate_signatures(&signatures).expect("Signature aggregation should not fail if G1 points are valid.");
 
         // Check
         let expected = hex::decode("02030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3").unwrap();
-        assert_eq!(agg_signatures, expected);
+        assert_eq!(agg_signature, expected);
     }
 
+    /// Test aggregated signatures verification
+    #[test]
+    fn test_verify_aggregated_signatures_1() {
+        let mut bn128 = Bn128 {};
+
+        // Message
+        let msg = hex::decode("73616d706c65").unwrap();
+
+        // Signature 1
+        let secret_key1 = hex::decode("1ab1126ff2e37c6e6eddea943ccb3a48f83b380b856424ee552e113595525565").unwrap();
+        let public_key1 = bn128.derive_public_key(&secret_key1).unwrap();
+        let sign_1 = bn128.sign(&secret_key1, &msg).unwrap();
+
+        // Signature 2
+        let secret_key2 = hex::decode("2009da7287c158b126123c113d1c85241b6e3294dd75c643588630a8bc0f934c").unwrap();
+        let public_key2 = bn128.derive_public_key(&secret_key2).unwrap();
+        let sign_2 = bn128.sign(&secret_key2, &msg).unwrap();
+
+        // Public Key and Signature aggregation
+        let agg_public_key =bn128.aggregate_public_keys(&[&public_key1, &public_key2]).unwrap();
+        let agg_signature =bn128.aggregate_signatures(&[&sign_1, &sign_2]).unwrap();
+
+        // Verification single signatures
+        assert!(bn128.verify(&public_key1, &sign_1, &msg).is_ok(), "Signature 1 verification failed");
+        assert!(bn128.verify(&public_key2, &sign_2, &msg).is_ok(), "Signature 2 signature verification failed");
+
+        // Aggregated signature verification
+        assert!(bn128.verify(&agg_public_key, &agg_signature, &msg).is_ok(), "Aggregated signature verification failed");
+    }
+
+//    /// Test `aggregate_public_keys`
+//    #[test]
+//    fn test_aggregate_signatures_1() {
+//        let mut bn128 = Bn128 {};
+//
+//        let file = File::open("./src/bn256.json").expect("File should open read only");
+//        let json: Value = serde_json::from_reader(file).expect("File should be proper JSON");
+//        let adds = json["add"].as_array().expect("File should have priv key");
+//        for (i, elem) in adds.iter().enumerate() {
+//            println!("Test number {}:", i);
+//            // Signatures (points in G1)
+//            let x1 = hex::decode(elem.get("x1").unwrap().as_str().unwrap()).unwrap();
+//            let y1 = hex::decode(elem.get("y1").unwrap().as_str().unwrap()).unwrap();
+//            let p1x = Fq::from_slice(&x1).unwrap();
+//            let p1y = Fq::from_slice(&y1).unwrap();
+//            let p1 = G1::from(AffineG1::new(p1x, p1y).unwrap());
+//            let sign1 = bn128.to_compressed_g1(p1).unwrap();
+//
+//            let x2 = hex::decode(elem.get("x2").unwrap().as_str().unwrap()).unwrap();
+//            let y2 = hex::decode(elem.get("y2").unwrap().as_str().unwrap()).unwrap();
+//            let p2x = Fq::from_slice(&x2).unwrap();
+//            let p2y = Fq::from_slice(&y2).unwrap();
+//            let p2 = G1::from(AffineG1::new(p2x, p2y).unwrap());
+//            let sign2 = bn128.to_compressed_g1(p2).unwrap();
+//
+//            let signatures = [&sign1[..], &sign2];
+//
+//            // Expected aggregation
+//            let expected_uncompressed = hex::decode(elem.get("result").unwrap().as_str().unwrap()).unwrap();
+//            let mut expected: Vec<u8> = Vec::new();
+//            expected.push(if &expected_uncompressed[63] % 2 == 0 {2} else {3} );
+//            expected.extend_from_slice(&expected_uncompressed[0..32]);
+//
+//            // Check
+//            let agg_signatures = bn128.aggregate_signatures(&signatures).expect("Builtin should not fail");
+//
+//            assert_eq!(agg_signatures, expected);
+//        };
+//    }
 }
